@@ -1,0 +1,7 @@
+{
+  "name": "DZen AI",
+  "description": "A premium AI-powered mental health and smart study companion. Features include an AI Study Architect, real-time Emotion Detection, Mood Tracking, a supportive AI Companion, and a Peer Support Forum, all wrapped in a calming atmospheric blue interface.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
