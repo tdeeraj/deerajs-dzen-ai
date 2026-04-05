@@ -15,15 +15,25 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { format } from 'date-fns';
 
+interface Reply {
+  id: number;
+  content: string;
+  author_name: string;
+  is_anonymous: boolean;
+  created_at: string;
+}
+
 interface Post {
   id: number;
   content: string;
   author_name: string;
   is_anonymous: boolean;
   created_at: string;
-  likes?: number;
-  replies?: number;
-  is_liked?: boolean;
+  likes: number;
+  replies: number;
+  is_liked: boolean;
+  replies_list?: Reply[];
+  loading_replies?: boolean;
 }
 
 export default function Forum() {
@@ -39,16 +49,13 @@ export default function Forum() {
   const fetchPosts = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/forum');
+      const response = await fetch('/api/forum', {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : ''
+        }
+      });
       const data = await response.json();
-      // Add mock likes/replies if not present
-      const enhancedData = data.map((p: any) => ({
-        ...p,
-        likes: p.likes || Math.floor(Math.random() * 50),
-        replies: p.replies || Math.floor(Math.random() * 10),
-        is_liked: false
-      }));
-      setPosts(enhancedData);
+      setPosts(data);
     } catch (error) {
       console.error('Error fetching posts:', error);
     } finally {
@@ -56,42 +63,84 @@ export default function Forum() {
     }
   };
 
-  const handleLike = (postId: number) => {
-    setPosts(prev => prev.map(post => {
-      if (post.id === postId) {
-        return {
-          ...post,
-          likes: post.is_liked ? (post.likes || 0) - 1 : (post.likes || 0) + 1,
-          is_liked: !post.is_liked
-        };
+  const handleLike = async (postId: number) => {
+    if (!token) return;
+    try {
+      const response = await fetch(`/api/forum/${postId}/like`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const { liked } = await response.json();
+        setPosts(prev => prev.map(post => {
+          if (post.id === postId) {
+            return {
+              ...post,
+              likes: liked ? post.likes + 1 : post.likes - 1,
+              is_liked: liked
+            };
+          }
+          return post;
+        }));
       }
-      return post;
-    }));
+    } catch (error) {
+      console.error('Error liking post:', error);
+    }
   };
 
-  const handleReply = (postId: number) => {
+  const handleReply = async (postId: number) => {
     if (replyingTo === postId) {
       setReplyingTo(null);
       setReplyContent('');
     } else {
       setReplyingTo(postId);
+      // Fetch replies
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, loading_replies: true } : p));
+      try {
+        const response = await fetch(`/api/forum/${postId}/replies`);
+        const replies = await response.json();
+        setPosts(prev => prev.map(p => p.id === postId ? { ...p, replies_list: replies, loading_replies: false } : p));
+      } catch (error) {
+        console.error('Error fetching replies:', error);
+        setPosts(prev => prev.map(p => p.id === postId ? { ...p, loading_replies: false } : p));
+      }
     }
   };
 
-  const submitReply = (postId: number) => {
-    if (!replyContent.trim()) return;
-    // Mock reply submission
-    setPosts(prev => prev.map(post => {
-      if (post.id === postId) {
-        return {
-          ...post,
-          replies: (post.replies || 0) + 1
-        };
+  const submitReply = async (postId: number) => {
+    if (!replyContent.trim() || !token) return;
+    
+    try {
+      const response = await fetch(`/api/forum/${postId}/reply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ content: replyContent, is_anonymous: isAnonymous })
+      });
+
+      if (response.ok) {
+        setReplyContent('');
+        // Refresh replies for this post
+        const repliesRes = await fetch(`/api/forum/${postId}/replies`);
+        const replies = await repliesRes.json();
+        setPosts(prev => prev.map(post => {
+          if (post.id === postId) {
+            return {
+              ...post,
+              replies: post.replies + 1,
+              replies_list: replies
+            };
+          }
+          return post;
+        }));
       }
-      return post;
-    }));
-    setReplyingTo(null);
-    setReplyContent('');
+    } catch (error) {
+      console.error('Error submitting reply:', error);
+    }
   };
 
   useEffect(() => {
@@ -259,22 +308,46 @@ export default function Forum() {
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
-                    className="mt-8 pt-8 border-t border-white/5 space-y-4"
+                    className="mt-8 pt-8 border-t border-white/5 space-y-6"
                   >
-                    <textarea
-                      value={replyContent}
-                      onChange={(e) => setReplyContent(e.target.value)}
-                      placeholder="Write your reply..."
-                      className="w-full p-6 bg-white/5 border border-white/10 rounded-[2rem] text-white focus:ring-2 focus:ring-blue-500/50 outline-none transition-all h-24 resize-none placeholder:text-white/10 font-medium"
-                    />
-                    <div className="flex justify-end">
-                      <button
-                        onClick={() => submitReply(post.id)}
-                        disabled={!replyContent.trim()}
-                        className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 disabled:opacity-50"
-                      >
-                        Send Reply
-                      </button>
+                    {/* Replies List */}
+                    <div className="space-y-6">
+                      {post.loading_replies ? (
+                        <div className="flex justify-center py-4">
+                          <Loader2 className="animate-spin text-blue-400" size={24} />
+                        </div>
+                      ) : post.replies_list?.map((reply) => (
+                        <div key={reply.id} className="bg-white/5 p-6 rounded-[2rem] border border-white/5">
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-[10px] font-black text-white/40 border border-white/5">
+                              {reply.is_anonymous ? '?' : reply.author_name[0]}
+                            </div>
+                            <div>
+                              <span className="text-sm font-bold text-white">{reply.author_name}</span>
+                              <span className="text-[10px] text-white/20 ml-3 uppercase tracking-widest">{format(new Date(reply.created_at), 'p')}</span>
+                            </div>
+                          </div>
+                          <p className="text-white/60 text-sm leading-relaxed">{reply.content}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="space-y-4 pt-4">
+                      <textarea
+                        value={replyContent}
+                        onChange={(e) => setReplyContent(e.target.value)}
+                        placeholder="Write your reply..."
+                        className="w-full p-6 bg-white/5 border border-white/10 rounded-[2rem] text-white focus:ring-2 focus:ring-blue-500/50 outline-none transition-all h-24 resize-none placeholder:text-white/10 font-medium"
+                      />
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => submitReply(post.id)}
+                          disabled={!replyContent.trim() || !token}
+                          className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-blue-700 transition-all shadow-xl shadow-blue-500/20 disabled:opacity-50"
+                        >
+                          Send Reply
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 )}
